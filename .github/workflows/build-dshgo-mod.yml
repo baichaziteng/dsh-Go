@@ -116,6 +116,29 @@ jobs:
           python3 --version
           xz --version | head -1
 
+      # runtime/build-runtime.sh 里把 Termux 包版本写死了（PROOT_VERSION="5.1.107.98"）。
+      # 镜像源一前进，旧 deb 被删就 404。这里每次运行都从源里解析当前版本再改写，
+      # 以后源再更新也不需要人工改脚本。
+      - name: Sync runtime pins to current mirror state
+        run: |
+          set -euo pipefail
+          REPO=https://packages.termux.dev/apt/termux-main
+          PKGS=$(curl -sL --retry 3 "$REPO/dists/stable/main/binary-aarch64/Packages")
+          [[ -n "$PKGS" ]] || { echo "::error::拿不到 Termux Packages 索引"; exit 1; }
+          ver() { echo "$PKGS" | grep -A8 "^Package: $1\$" | grep '^Version:' | head -1 | awk '{print $2}'; }
+          for pkg in proot libtalloc libandroid-shmem; do
+            echo "$pkg 源上最新版本 = $(ver "$pkg")"
+          done
+          NEW_PROOT=$(ver proot)
+          NEW_TALLOC=$(ver libtalloc)
+          NEW_SHMEM=$(ver libandroid-shmem)
+          [[ -n "$NEW_PROOT" ]] || { echo "::error::解析不到 proot 版本"; exit 1; }
+          sed -i "s/^PROOT_VERSION=.*/PROOT_VERSION=\"$NEW_PROOT\"/" runtime/build-runtime.sh
+          sed -i "s/^TALLOC_VERSION=.*/TALLOC_VERSION=\"$NEW_TALLOC\"/" runtime/build-runtime.sh
+          sed -i "s/^SHMEM_VERSION=.*/SHMEM_VERSION=\"$NEW_SHMEM\"/" runtime/build-runtime.sh
+          echo "--- 改写后的 pin ---"
+          grep -nE '^(PROOT|TALLOC|SHMEM)_VERSION=' runtime/build-runtime.sh
+
       - name: Build runtime (arm64-v8a)
         env:
           # 锁文件 runtime/locks/ubuntu-noble-*.json 里钉的是旧版 deb，镜像上已 404。
