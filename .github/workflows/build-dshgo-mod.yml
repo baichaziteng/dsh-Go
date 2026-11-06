@@ -105,11 +105,36 @@ jobs:
           path: runtime/out
           key: runtime-r15-arm64-${{ hashFiles('runtime/build-runtime.sh', 'runtime/locks/**') }}
 
+      - name: Install runtime build tools
+        run: |
+          set -euo pipefail
+          # build-runtime.sh 第 91 行会检查这 5 个工具，缺一个就直接退出
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3 xz-utils curl tar coreutils
+          echo "--- 工具检查 ---"
+          command -v curl python3 tar xz sha256sum
+          python3 --version
+          xz --version | head -1
+
       - name: Build runtime (arm64-v8a)
         run: |
-          # -x 打开逐行追踪；2>&1 | tail -200 只保留最后 200 行，避免被截断
-          bash -x runtime/build-runtime.sh arm64-v8a 2>&1 | tail -200
+          # 不要用 | tail 吞掉退出码：脚本失败必须让这一步失败
+          set -o pipefail
+          bash runtime/build-runtime.sh arm64-v8a
+          echo "=== runtime/out 顶层 ==="
           ls -la runtime/out/
+          echo "=== arm64-v8a/assets/runtime ==="
+          ls -la runtime/out/arm64-v8a/assets/runtime/ || {
+            echo "::error::rootfs 没生成，APK 会是空壳"
+            exit 1
+          }
+          SIZE=$(stat -c %s runtime/out/arm64-v8a/assets/runtime/rootfs-arm64-v8a.tar.xz 2>/dev/null || echo 0)
+          echo "rootfs 大小: $SIZE 字节"
+          # 官方包是 159 MB；小于 100 MB 基本可以断定构建不完整
+          if [ "$SIZE" -lt 100000000 ]; then
+            echo "::error::rootfs 只有 $SIZE 字节，明显不完整（官方约 159 MB）"
+            exit 1
+          fi
 
       # ---------- 2. 改包名 + 改显示名 + 加特权工具 ----------
       - name: Patch applicationId and label
