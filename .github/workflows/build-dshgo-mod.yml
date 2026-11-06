@@ -153,14 +153,16 @@ jobs:
       - name: Build APK
         working-directory: app
         run: |
-          # 打开 Gradle 的完整堆栈与错误输出，失败时能看到真正的编译错误
           set -o pipefail
+          # versionCode 上限 2147483647；date +%y%m%d 得到 6 位（约 26 万），安全
+          BUILD_NUMBER="$(date +%y%m%d)"
+          echo "versionCode=$BUILD_NUMBER"
           flutter build apk --release \
             --flavor arm64 \
             --target-platform android-arm64 \
             --build-name "$VERSION_NAME" \
-            --build-number "$(date +%y%m%d%H%M)" \
-            --dart-define="DSH_APP_VERSION=$VERSION_NAME+$(date +%y%m%d%H%M)" \
+            --build-number "$BUILD_NUMBER" \
+            --dart-define="DSH_APP_VERSION=$VERSION_NAME+$BUILD_NUMBER" \
             --verbose 2>&1 | tail -400
 
       - name: Collect artifact
