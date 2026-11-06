@@ -76,12 +76,28 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # 官方 action 每次都要从 dl.google.com 下载 SDK，在中国区 runner 上会卡住。
+      # ubuntu-24.04 镜像本身已预装 Android SDK，直接复用即可。
+      - name: Use preinstalled Android SDK
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            echo "::error::预装 Android SDK 不存在，无法继续"
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "复用的 SDK 路径: $SDK"
+          ls "$SDK" || true
+          echo "--- platforms ---"
+          ls "$SDK/platforms" || true
 
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
+          # 不下载 Gradle 发行包，避免又一次跨境大文件拉取
+          cache-read-only: false
 
       # ---------- 1. 构建内置运行时（rootfs + 桥接），APK 打包要用 ----------
       - name: Cache runtime artifacts
