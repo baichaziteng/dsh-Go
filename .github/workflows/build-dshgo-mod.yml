@@ -1,0 +1,180 @@
+# 云端构建 DSH Go 改版 APK
+#
+# 用途：在 GitHub Actions 上编译一个「改包名 + 加 Shizuku 特权工具」的 DSH Go。
+# 产出：可直接下载的 APK artifact，装成与官方版并存的独立应用。
+#
+# 放置位置：仓库根目录 .github/workflows/build-dshgo-mod.yml
+# 触发方式：Actions 页面手动 Run workflow，或 push 到 main。
+
+name: Build DSH Go (mod)
+
+on:
+  workflow_dispatch:
+    inputs:
+      application_id:
+        description: '安装身份（必须与官方版不同，否则无法共存）'
+        required: true
+        default: 'io.github.ccch1mneyyy.dsh_go_dev'
+      app_label:
+        description: '桌面显示名称'
+        required: true
+        default: 'DSH Go Mod'
+      version_name:
+        description: '版本名'
+        required: true
+        default: '1.0.11'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-dshgo-mod.yml'
+
+# 官方 CI 用的版本，保持一致，避免 lockfile / goldens 冲突
+env:
+  FLUTTER_VERSION: 3.47.7
+  NODE_VERSION: 24.22.1
+  GRADLE_VERSION: 9.3.1
+  TZ: Asia/Shanghai
+
+permissions:
+  contents: read
+
+jobs:
+  android-apk:
+    name: Build arm64 release APK
+    runs-on: ubuntu-24.04
+    # runtime 构建 + flutter build 都比较重，给足时间
+    timeout-minutes: 90
+
+    env:
+      DSH_MAVEN_MIRRORS: 0
+      UV_USE_IO_URING: 0
+      APP_ID: ${{ inputs.application_id || 'io.github.ccch1mneyyy.dsh_go_dev' }}
+      APP_LABEL: ${{ inputs.app_label || 'DSH Go Mod' }}
+      VERSION_NAME: ${{ inputs.version_name || '1.0.11' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Java 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      # ---------- 1. 构建内置运行时（rootfs + 桥接），APK 打包要用 ----------
+      - name: Cache runtime artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: runtime/out
+          key: runtime-r15-arm64-${{ hashFiles('runtime/build-runtime.sh', 'runtime/locks/**') }}
+
+      - name: Build runtime (arm64-v8a)
+        run: |
+          # 脚本注释：# entirely on an x86_64 Linux host without executing any foreign-architecture code
+          # ABI 名必须是 arm64-v8a（不是 arm64），输出到 runtime/out/arm64-v8a/
+          bash runtime/build-runtime.sh arm64-v8a
+          ls -la runtime/out/
+
+      # ---------- 2. 改包名 + 改显示名 + 加特权工具 ----------
+      - name: Patch applicationId and label
+        run: |
+          set -euo pipefail
+          GRADLE=app/android/app/build.gradle.kts
+          MANIFEST=app/android/app/src/main/AndroidManifest.xml
+
+          # applicationId：安装身份，决定能否与官方版共存
+          sed -i "s|applicationId = \"io.github.ccch1mneyyy.dsh_app\"|applicationId = \"$APP_ID\"|" "$GRADLE"
+          # namespace 保持不变（代码包名不动，Kotlin 一行不用改）
+
+          # 桌面显示名，避免和官方版混淆
+          sed -i "s|android:label=\"DSH Go\"|android:label=\"$APP_LABEL\"|" "$MANIFEST"
+
+          # 桌面图标别名常量与真包名对齐（影响图标切换，不影响主功能）
+          sed -i "s|private const val PKG = \"io.github.ccch1mneyyy.dsh_app\"|private const val PKG = \"io.github.ccch1mneyyy.dsh_app\" /* keep: alias class names stay in namespace */|" \
+            app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/icons/LauncherIcons.kt
+
+          echo "--- patched ---"
+          grep -n 'applicationId\|namespace' "$GRADLE" | head
+          grep -n 'android:label' "$MANIFEST" | head -2
+
+      - name: Apply privileged-tool patch
+        run: |
+          set -euo pipefail
+          # 把 §4 的「只加不改」补丁应用进来；补丁文件随仓库提交在 patches/ 下
+          if [ -f patches/0001-privileged-tools.patch ]; then
+            git apply --verbose patches/0001-privileged-tools.patch
+          else
+            echo "::warning::patches/0001-privileged-tools.patch 不存在，本次只构建改包名的官方版副本"
+          fi
+
+      # ---------- 3. 编译 ----------
+      - name: Flutter pub get
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+
+      - name: Generate local.properties
+        working-directory: app
+        run: |
+          printf 'sdk.dir=%s\nflutter.sdk=%s\n' "$ANDROID_HOME" "$FLUTTER_ROOT" > android/local.properties
+
+      - name: Build APK
+        working-directory: app
+        run: |
+          # versionCode 用构建时刻（build.gradle.kts 的 buildMinuteVersionCode），
+          # versionName 由 --build-name 给，+1 只是占位符
+          flutter build apk --release \
+            --flavor arm64 \
+            --target-platform android-arm64 \
+            --build-name "$VERSION_NAME" \
+            --build-number "$(date +%y%m%d%H%M)" \
+            --dart-define="DSH_APP_VERSION=$VERSION_NAME+$(date +%y%m%d%H%M)"
+
+      - name: Collect artifact
+        run: |
+          mkdir -p out
+          find app/build/app/outputs -name '*.apk' -exec cp -v {} out/ \;
+          ls -la out/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dshgo-mod-apk
+          path: out/*.apk
+          retention-days: 14
+
+      - name: Summary
+        run: |
+          {
+            echo "## 构建完成"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 安装身份 | \`$APP_ID\` |"
+            echo "| 显示名 | $APP_LABEL |"
+            echo "| 版本 | $VERSION_NAME |"
+            echo "| 签名 | debug（GitHub 生成） |"
+            echo ""
+            echo "下载 artifact **dshgo-mod-apk**，与官方版并存安装。"
+          } >> "$GITHUB_STEP_SUMMARY"
