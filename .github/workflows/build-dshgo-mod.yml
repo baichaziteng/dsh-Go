@@ -187,7 +187,11 @@ jobs:
           set -euo pipefail
           # 把「只加不改」补丁应用进来；补丁文件随仓库提交在 patches/ 下
           if [ -f patches/0001-privileged-tools.patch ]; then
-            git apply --verbose patches/0001-privileged-tools.patch
+            # --recount: 不信任 hunk 头的行数，让 git 自己重算（补丁是手工拼的）
+            # --3way:    上下文有偏移时做三方合并，源码 minor 变动也能打上
+            # -C1:       只要求 1 行上下文，容忍度更高
+            git apply --verbose --recount --3way -C1 patches/0001-privileged-tools.patch \
+              || git apply --verbose --recount -C0 --unidiff-zero patches/0001-privileged-tools.patch
           else
             echo "::error::patches/0001-privileged-tools.patch 不存在，拒绝构建一个假的特权版"
             exit 1
