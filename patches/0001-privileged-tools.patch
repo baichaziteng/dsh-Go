@@ -33,32 +33,31 @@ diff --git a/app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/phone
 index 3140d29..6e6752e 100644
 --- a/app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/phone/a11y/MainScreenDriver.kt
 +++ b/app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/phone/a11y/MainScreenDriver.kt
-@@ -352,6 +352,21 @@ internal class MainScreenDriver(private val service: PhoneA11yService, private v
+diff --git a/app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/phone/a11y/MainScreenDriver.kt b/app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/phone/a11y/MainScreenDriver.kt
+@@ -352,6 +352,23 @@
              val before = clock.count
              val out = actuator.click(r.node, r.el.bounds, r.cap.screen, a.long)
              val what = short(r.el.label.ifEmpty { r.el.role })
-+            // [dshgo-mod] Some apps refuse accessibility gestures (WeChat among them). Retry on
-+            // the privileged shell only when the system did NOT accept the click, so a real
-+            // click is never repeated and cannot become a double tap.
-+            if (!out.accepted) {
++            // [dshgo-mod] WeChat accepts accessibility gestures and then silently ignores them,
++            // so accepted == true is not proof the tap landed. When the privileged shell is
++            // wired up (paired wireless debugging) and the snapshot's app is still in front,
++            // drive the tap through the shell uid instead, which WeChat cannot ignore.
++            // When the shell is absent this block does nothing: the original behaviour is kept
++            // exactly as it was for every other app.
++            run {
++                val shell = PhoneRegistry.mainShell?.invoke() ?: return@run
 +                val clipped = r.el.bounds.intersect(r.cap.screen)
-+                val shell = if (clipped.isEmpty) null else PhoneRegistry.mainShell?.invoke()
-+                // Foreground must still be the app the snapshot came from, or a stale point
-+                // could land on whatever is on screen now.
-+                if (shell != null && shell.foreground()?.substringBefore('/') == r.snap.packageName) {
-+                    if (shell.tap(clipped.centerX, clipped.centerY)) {
-+                        // l10n:keep agent screen result
-+                        return after(before, r.snap, gen, "已通过特权通道点击「$what」。")
-+                    }
++                if (clipped.isEmpty) return@run
++                if (shell.foreground()?.substringBefore('/') != r.snap.packageName) return@run
++                val ok = shell.tap(clipped.centerX, clipped.centerY)
++                if (ok) {
++                    // l10n:keep agent screen result
++                    return after(before, r.snap, gen, "已通过特权通道点击「$what」。")
 +                }
 +            }
              // l10n:keep agent screen result
              if (!out.accepted) return ActionResult(false, "系统没有接受这次${if (a.long) "长按" else "点击"}「$what」。", observeQuiet())
              // l10n:keep agent screen result
-diff --git a/app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/phone/background/AdbStarter.kt b/app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/phone/background/AdbStarter.kt
-index 9f41561..d810e4e 100644
---- a/app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/phone/background/AdbStarter.kt
-+++ b/app/android/app/src/main/kotlin/io/github/ccch1mneyyy/dsh_app/phone/background/AdbStarter.kt
 @@ -59,6 +59,16 @@ class AdbStarter(private val context: Context, private val onChanged: () -> Unit
  
      fun status(): AdbStatus = AdbStatus(wirelessDebugging(), pairedFlag.exists(), channel?.alive() == true)
